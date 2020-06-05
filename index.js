@@ -1,14 +1,47 @@
+/**
+ * Main requires
+ */
 const Discord = require ('discord.js');
+const Sequelize = require('sequelize');
 const client = new Discord.Client();
+
+/**
+ * other requires and globals
+ * TODO fix the globals
+ */
 const config = require('./config.json');
 const staticCommand = config.command;
 let channelFound = false;
 let bestOfChannel = null;
 let serverID = false;
 
-let messagePosted = false;
+const sequelize = new Sequelize(config.database.name, config.database.user, config.database.password, {
+	host: config.database.host,
+	dialect: "sqlite",
+	logging: config.database.logging,
+	// SQLite only
+	storage: config.database.storage,
+});
+
+/**
+ * schema
+ */
+
+const bestOfPosts = sequelize.define('best_of_posts', {
+  id: {
+    type: Sequelize.INTEGER,
+    autoIncrement: true,
+    primaryKey: true
+  },
+  post_id: {
+    type: Sequelize.INTEGER,
+    unique: true
+  },
+  date: Sequelize.DATE,
+});
 
 client.once('ready', () => {
+  bestOfPosts.sync({force: true});
 	let iterator = client.channels.cache;
 	iterator.forEach((value, key, map) => {
 		if (value.name === config.channel) {
@@ -37,16 +70,11 @@ client.on('message', message => {
       if (Number.isInteger(parseInt(args[0]))) {
         //we have a valid integer id, so let's use it
         const messageID = args[0];
-        let alreadyExists = messageAlreadyBestOf(messageID);
-        if (!alreadyExists) {
-          message.channel.messages.fetch(messageID)
-          .then(msg => bestOfMessage(msg, message.channel, message.author))
-          .catch(console.error);
-          if (messagePosted) {
-            return message.channel.send(`Annother item added to 'Best Of' courtesy of ${message.author}`);
-          }
-        }
-      }
+        message.channel.messages.fetch(messageID)
+        .then(msg => bestOfMessage(msg, message.channel, message.author))
+        .catch(console.error);
+      } 
+
       if (args[0] === 'help') {
         return message.channel.send(getHelpMessage());
       }
@@ -78,20 +106,43 @@ function getInfoMessage() {
   Commands: !bestof post_id | !bestof help | !bestof info`;
 }
 
-function bestOfMessage(message, channel, user) {
+async function bestOfMessage(message, channel, user) {
   const serverID = getServerID();
+  const messageID = message.id;
+  let exists = null;
   if (serverID == 0) {
     return 'Error';
   }
-  createEmbed(message, channel, user, serverID);
-  //bestOfChannel.send(createEmbed(message, channel, user, serverID));
-  messagePosted = true;
+  const post = await bestOfPosts.findOne({where: {post_id: messageID }});
+  if (post) {
+    exists = true;
+  } else {
+    exists = false;
+  }
+  if (!exists) {
+    try {
+      // insert into posts
+      const post = await bestOfPosts.create({
+        post_id: messageID,
+        date: Date.now() / 1000 | 0
+      });
+    }
+    catch (e) {
+      //already exists
+      console.log(e);
+    }
+    //createEmbed(message, channel, user, serverID);
+    bestOfChannel.send(createEmbed(message, channel, user, serverID));
+    return message.channel.send(`Another item added to 'Best Of'!`);
+  } else {
+    return message.channel.send(`This post is already a #best-of!`);
+  }
 }
 
 function createEmbed(message, channel, user, serverID) {
   let embed =  new Discord.MessageEmbed();
   let date = prettifyDate(message.createdTimestamp);
-  console.log(message.guild.members);
+
   embed.setColor('#000000');
   embed.setTitle(`Originally posted by : ${message.member.displayName}`);
   embed.setURL(`https://discordapp.com/channels/${serverID}/${channel.id}/${message.id}`)
@@ -102,7 +153,7 @@ function createEmbed(message, channel, user, serverID) {
   if (message.content) {
     embed.setDescription(message.content)
   }
-  embed.addField(`Submitted by:`, user.username);
+  //embed.addField(`Submitted by:`, user.username);
   embed.setFooter(`Added to the Best Of Archive: `);
   embed.setTimestamp();
   return embed;
